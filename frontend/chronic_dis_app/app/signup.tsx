@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, SafeAreaView, StatusBar, Image, Alert, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
+import { post, setSessionToken } from '../src/lib/api';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Colors } from '../constants/Colors';
 import { Ionicons } from '@expo/vector-icons';
@@ -19,18 +20,16 @@ export default function SignupScreen() {
     }
     setIsLoading(true);
     try {
-      const response = await fetch('http://172.20.10.10:5000/patients/signup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, password }),
-      });
-      const data = await response.json();
-      if (response.ok) {
+      const { ok, data } = await post('/patients/signup', { name, email, password }, false);
+      if (ok) {
+        if (data.session_token) {
+          await setSessionToken(data.session_token);
+        }
         Alert.alert("Success", "Account created! You can now log in.", [
           { text: 'OK', onPress: () => router.push('/login') }
         ]);
       } else {
-        Alert.alert("Signup Failed", data.message || "An unknown error occurred.");
+        Alert.alert("Signup Failed", (data as any).message || "An unknown error occurred.");
       }
     } catch (error) {
       Alert.alert("Connection Error", "Could not connect to the server.");

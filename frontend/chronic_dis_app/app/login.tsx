@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, SafeAreaView, StatusBar, Image, Alert, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
+import { post, setSessionToken } from '../src/lib/api';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Colors } from '../constants/Colors';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,16 +19,14 @@ export default function LoginScreen() {
     }
     setIsLoading(true);
     try {
-      const response = await fetch('http://172.20.10.10:5000/patients/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-      const data = await response.json();
-      if (response.ok) {
+      const { ok, data } = await post('/patients/login', { email, password }, false);
+      if (ok) {
+        if (data.session_token) {
+          await setSessionToken(data.session_token);
+        }
         router.replace('/(tabs)');
       } else {
-        Alert.alert("Login Failed", data.message || "An unknown error occurred.");
+        Alert.alert("Login Failed", (data as any).message || "An unknown error occurred.");
       }
     } catch (error) {
       Alert.alert("Connection Error", "Could not connect to the server.");

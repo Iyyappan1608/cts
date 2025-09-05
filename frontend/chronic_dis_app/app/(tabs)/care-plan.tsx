@@ -1,159 +1,107 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import {
-  SafeAreaView,
-  FlatList,
-  StyleSheet,
-  Text,
-  View,
-  StatusBar,
-  TouchableOpacity,
-  Alert,
-} from 'react-native';
-
-// --- 1. DATA TYPES (for TypeScript) ---
-interface PlanItemData {
-  id: string;
-  icon: string;
-  type: string;
-  title: string;
-  description: string;
-}
-
-interface DayPlanData {
-  id: string;
-  title: string;
-  items: PlanItemData[];
-}
-
-// --- 2. RAW DATA & PARSING LOGIC ---
-
-// In a real app, you would fetch this string from your backend API
-const carePlanText = `
-Day 1
-🏃 Physical Activity: 30-minute brisk walk → Improves cardiovascular health, crucial for managing hypertension and reducing stroke risk.
-🧘 Mental Wellness: 10-minute guided meditation for stress reduction → Helps lower blood pressure and manage anxiety related to health conditions.
-🥗 Meals: Breakfast: Oatmeal with berries. Lunch: Grilled chicken salad. Dinner: Baked salmon with steamed vegetables → Low in sodium and saturated fats to support heart health and T2D management.
-💧 Hydration: Drink 8 glasses of water throughout the day → Essential for kidney function and overall health.
-❌ Avoid: Salty processed foods (canned soups, frozen meals) and sugary drinks → These can spike blood pressure and blood sugar levels.
-✅ Today's risk reduction: Lowering sodium intake and engaging in light cardio directly addresses hypertension.
-⚠ Consequences if skipped: Increased blood pressure, potential for blood sugar fluctuations, and higher strain on the heart.
-
-Day 2
-🏃 Physical Activity: 20 minutes of light stretching and mobility exercises → Improves circulation without over-exerting the heart.
-🧘 Mental Wellness: Practice deep breathing exercises for 5 minutes, 3 times a day → Calms the nervous system and can lower heart rate.
-🥗 Meals: Breakfast: Greek yogurt with nuts. Lunch: Lentil soup. Dinner: Turkey meatballs with whole wheat pasta → Balanced meals with fiber and lean protein for stable energy and blood sugar.
-💧 Hydration: Infuse water with lemon or cucumber for flavor → Encourages consistent hydration.
-❌ Avoid: Red meat and fried foods → High in saturated fats which can worsen cholesterol levels.
-✅ Today's risk reduction: Focusing on lean proteins and fiber helps manage cholesterol and T2D.
-⚠ Consequences if skipped: Poor cholesterol management, risk of digestive issues, and fatigue from unstable blood sugar.
-`;
-
-const EMOJI_MAP: Record<string, { type: string; title: string }> = {
-  '🏃': { type: 'activity', title: 'Physical Activity' },
-  '🧘': { type: 'wellness', title: 'Mental Wellness' },
-  '🥗': { type: 'meals', title: 'Meals' },
-  '💧': { type: 'hydration', title: 'Hydration' },
-  '❌': { type: 'avoid', title: 'Avoid' },
-  '✅': { type: 'risk_reduction', title: "Today's Risk Reduction" },
-  '⚠': { type: 'consequences', title: 'Consequences if Skipped' },
-};
-
-const parseCarePlanText = (text: string): DayPlanData[] => {
-  if (!text || typeof text !== 'string') {
-    Alert.alert('Error', 'Invalid care plan data provided.');
-    return [];
-  }
-  const dayBlocks = text.trim().split(/Day \d+/).filter(Boolean);
-  return dayBlocks.map((block, index) => {
-    const dayTitle = `Day ${index + 1}`;
-    const lines = block.trim().split('\n');
-    const items = lines
-      .map((line) => {
-        const icon = line.trim().charAt(0);
-        const mappedInfo = EMOJI_MAP[icon];
-        if (!mappedInfo) return null;
-        const content = line.substring(1).trim();
-        const [action, explanation] = content.split('→').map((s) => s.trim());
-        return {
-          id: `${dayTitle}-${mappedInfo.type}`,
-          icon,
-          type: mappedInfo.type,
-          title: action || mappedInfo.title,
-          description: explanation || '',
-        };
-      })
-      .filter((item): item is PlanItemData => item !== null);
-    return { id: dayTitle, title: dayTitle, items };
-  });
-};
-
-// --- 3. REUSABLE UI COMPONENTS ---
-
-const PlanItem: React.FC<{ item: PlanItemData }> = ({ item }) => (
-  <View style={styles.itemContainer}>
-    <Text style={styles.itemIcon}>{item.icon}</Text>
-    <View style={styles.itemTextContainer}>
-      <Text style={styles.itemTitle}>{item.title}</Text>
-      <Text style={styles.itemDescription}>{item.description}</Text>
-    </View>
-  </View>
-);
-
-const DayPlanCard: React.FC<{ day: DayPlanData }> = ({ day }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const { standardItems, extraItems } = useMemo(() => {
-    const standard = day.items.filter(
-      (item) => item.type !== 'risk_reduction' && item.type !== 'consequences'
-    );
-    const extra = day.items.filter(
-      (item) => item.type === 'risk_reduction' || item.type === 'consequences'
-    );
-    return { standardItems: standard, extraItems: extra };
-  }, [day.items]);
-
-  return (
-    <View style={styles.card}>
-      <Text style={styles.dayTitle}>{day.title}</Text>
-      {standardItems.map((item) => (
-        <PlanItem key={item.id} item={item} />
-      ))}
-      {extraItems.length > 0 && (
-        <TouchableOpacity style={styles.button} onPress={() => setIsExpanded(!isExpanded)}>
-          <Text style={styles.buttonText}>
-            {isExpanded ? 'Show Less' : 'Show Risk & Consequences'}
-          </Text>
-        </TouchableOpacity>
-      )}
-      {isExpanded && extraItems.map((item) => <PlanItem key={item.id} item={item} />)}
-    </View>
-  );
-};
-
-// --- 4. MAIN SCREEN COMPONENT ---
+import React, { useState, useEffect } from 'react';
+import { SafeAreaView, StyleSheet, Text, View, StatusBar, TouchableOpacity, Alert, ScrollView, ActivityIndicator } from 'react-native';
+import { post, get } from '../../src/lib/api';
 
 export default function CarePlanScreen() {
-  const [planData, setPlanData] = useState<DayPlanData[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [todayContent, setTodayContent] = useState<string | null>(null);
+  const [dayNumber, setDayNumber] = useState<number | null>(null);
+  const [isCompleted, setIsCompleted] = useState<boolean>(false);
+  const [completedChoice, setCompletedChoice] = useState<'yes' | 'no' | null>(null);
+
+  const fetchToday = async () => {
+    setLoading(true);
+    try {
+      const { ok, data } = await get('/care_plan/today', true);
+      if (!ok) throw new Error((data as any).error || 'Fetch failed');
+      const d: any = data;
+      setTodayContent(d.content);
+      setDayNumber(d.day_number);
+      setIsCompleted(!!d.is_completed);
+      setCompletedChoice((d.completed_choice as any) || null);
+    } catch (e: any) {
+      setTodayContent(null);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const structuredData = parseCarePlanText(carePlanText);
-    setPlanData(structuredData);
+    fetchToday();
   }, []);
+
+  const handleGenerate = async () => {
+    setLoading(true);
+    try {
+      const { ok, data } = await post('/care_plan/generate', {}, true);
+      if (!ok) throw new Error((data as any).error || 'Generate failed');
+      await fetchToday();
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Could not generate plan');
+      setLoading(false);
+    }
+  };
+
+  const handleComplete = async (choice: 'yes' | 'no') => {
+    setLoading(true);
+    try {
+      const { ok, data } = await post('/care_plan/complete', { choice }, true);
+      if (!ok) throw new Error((data as any).error || 'Update failed');
+      setIsCompleted(true);
+      setCompletedChoice(choice);
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Could not update status');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" />
-      <FlatList
-        data={planData}
-        renderItem={({ item }) => <DayPlanCard day={item} />}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.list}
-        ListHeaderComponent={
-          <View style={styles.header}>
-            <Text style={styles.title}>Your 7-Day Care Plan</Text>
-            <Text style={styles.subtitle}>Follow these daily recommendations to improve your health.</Text>
+      <View style={styles.header}>
+        <Text style={styles.title}>Your Care Plan</Text>
+        <Text style={styles.subtitle}>Only today's unlocked day will be shown.</Text>
+      </View>
+
+      {loading && (
+        <View style={{ padding: 16 }}>
+          <ActivityIndicator />
+        </View>
+      )}
+
+      {!todayContent && !loading && (
+        <View style={{ padding: 16 }}>
+          <Text style={{ marginBottom: 12 }}>No plan available yet.</Text>
+          <TouchableOpacity style={styles.primaryButton} onPress={handleGenerate}>
+            <Text style={styles.primaryButtonText}>Generate Care Plan</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {todayContent && (
+        <ScrollView contentContainerStyle={styles.list}>
+          <View style={styles.card}>
+            <Text style={styles.dayTitle}>Day {dayNumber}</Text>
+            <Text style={styles.planText}>{todayContent}</Text>
+            {!isCompleted ? (
+              <View style={{ marginTop: 16 }}>
+                <Text style={{ marginBottom: 8 }}>Did you follow today's care plan?</Text>
+                <View style={{ flexDirection: 'row' }}>
+                  <TouchableOpacity style={styles.choiceYes} onPress={() => handleComplete('yes')}>
+                    <Text style={styles.choiceText}>Yes</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.choiceNo} onPress={() => handleComplete('no')}>
+                    <Text style={styles.choiceText}>No</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              <Text style={{ marginTop: 12 }}>Completed: {completedChoice}</Text>
+            )}
           </View>
-        }
-      />
+        </ScrollView>
+      )}
     </SafeAreaView>
   );
 }
@@ -181,7 +129,13 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 5,
   },
-  dayTitle: { fontSize: 22, fontWeight: 'bold', marginBottom: 20, color: '#1A237E' },
+  dayTitle: { fontSize: 22, fontWeight: 'bold', marginBottom: 16, color: '#1A237E' },
+  planText: { fontSize: 15, color: '#2C3E50', lineHeight: 22 },
+  primaryButton: { backgroundColor: '#0a7ea4', padding: 14, borderRadius: 10, alignItems: 'center' },
+  primaryButtonText: { color: '#fff', fontWeight: 'bold' },
+  choiceYes: { backgroundColor: '#2ECC71', padding: 12, borderRadius: 8, marginRight: 10 },
+  choiceNo: { backgroundColor: '#E74C3C', padding: 12, borderRadius: 8 },
+  choiceText: { color: '#fff', fontWeight: '600' },
   button: {
     backgroundColor: '#E8EAF6',
     borderRadius: 8,
@@ -192,11 +146,6 @@ const styles = StyleSheet.create({
   },
   buttonText: { color: '#3F51B5', fontWeight: 'bold', fontSize: 14 },
 
-  // Plan Item Styles
-  itemContainer: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 16 },
-  itemIcon: { fontSize: 24, marginRight: 12, marginTop: 2, color: '#34495E' },
-  itemTextContainer: { flex: 1 },
-  itemTitle: { fontSize: 16, fontWeight: 'bold', color: '#2C3E50', marginBottom: 4 },
-  itemDescription: { fontSize: 14, color: '#566573', lineHeight: 21 },
+  // Removed old per-item UI; using raw formatted plan text per backend
 });
 

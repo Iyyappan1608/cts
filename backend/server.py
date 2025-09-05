@@ -9,6 +9,10 @@ import json
 import mysql.connector
 import joblib
 from datetime import datetime
+from datetime import timedelta
+from care_plan_generator import generate_care_plan_from_report as llm_generate_care_plan
+from care_plan_generator import _format_output as format_care_text  # reuse formatter
+import re
 
 # --- 1. SETUP ---
 app = Flask(__name__)
@@ -18,7 +22,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 db_config = {
     'host': 'localhost',
     'user': 'root',
-    'password': 'Lohith@123',
+    'password': 'admin',
     'database': 'health_app_db'
 }
 
@@ -67,6 +71,61 @@ def init_database():
                 details JSON,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE
+            )
+        """)
+
+        # Create diabetes entries table (stores raw inputs and model result)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS diabetes_entries (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                patient_id INT,
+                input_data JSON,
+                output_data JSON,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE,
+                INDEX idx_patient_id (patient_id),
+                INDEX idx_created_at (created_at)
+            )
+        """)
+
+        # Create hypertension entries table (stores raw inputs and model result)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS hypertension_entries (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                patient_id INT,
+                input_data JSON,
+                output_data JSON,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE,
+                INDEX idx_patient_id (patient_id),
+                INDEX idx_created_at (created_at)
+            )
+        """)
+
+        # Care plan master table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS care_plans (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                patient_id INT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE,
+                INDEX idx_patient_id (patient_id)
+            )
+        """)
+
+        # Per-day care plan items
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS care_plan_days (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                care_plan_id INT NOT NULL,
+                day_number TINYINT NOT NULL,
+                content MEDIUMTEXT NOT NULL,
+                unlocked_at DATETIME NOT NULL,
+                is_completed TINYINT(1) DEFAULT 0,
+                completed_choice ENUM('yes','no') NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (care_plan_id) REFERENCES care_plans(id) ON DELETE CASCADE,
+                UNIQUE KEY unique_day (care_plan_id, day_number)
             )
         """)
         
@@ -143,7 +202,7 @@ try:
     print("--- Chronic disease models loaded successfully! ---")
 
     # Load Diabetes Subtype Models
-    diabetes_pkl_path = r"C:\Users\IYYAPPAN\Desktop\Health_app\backend\diabetes_class"
+    diabetes_pkl_path = r"D:\SEN PRJ\cts\backend\diabetes_class"
     if os.path.exists(os.path.join(diabetes_pkl_path, 'lgbm_classifier.pkl')):
         models['diabetes_subtype_classifier'] = joblib.load(os.path.join(diabetes_pkl_path, 'lgbm_classifier.pkl'))
         models['diabetes_risk_model'] = joblib.load(os.path.join(diabetes_pkl_path, 'kmeans_model.pkl'))
@@ -154,7 +213,7 @@ try:
         print("--- Diabetes subtype models not found ---")
     
     # Load Hypertension Model from the new location (FIXED - removed unsafe parameter)
-    hypertension_pkl_path = r"C:\Users\IYYAPPAN\Desktop\Health_app\backend\hypertension_class"
+    hypertension_pkl_path = r"D:\SEN PRJ\cts\backend\hypertension_class"
     print(f"Looking for hypertension models in: {hypertension_pkl_path}")
 
     if os.path.exists(hypertension_pkl_path):
@@ -380,6 +439,46 @@ def save_prediction_to_db(patient_id, prediction_type, page_source, input_data, 
             cursor.close()
             conn.close()
 
+def save_diabetes_entry(patient_id, input_data, output_data):
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO diabetes_entries (patient_id, input_data, output_data)
+            VALUES (%s, %s, %s)
+            """,
+            (patient_id, json.dumps(input_data), json.dumps(output_data))
+        )
+        conn.commit()
+        print(f"Diabetes entry saved for patient {patient_id}")
+    except mysql.connector.Error as err:
+        print(f"Error saving diabetes entry: {err}")
+    finally:
+        if 'conn' in locals() and conn.is_connected():
+            cursor.close()
+            conn.close()
+
+def save_hypertension_entry(patient_id, input_data, output_data):
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO hypertension_entries (patient_id, input_data, output_data)
+            VALUES (%s, %s, %s)
+            """,
+            (patient_id, json.dumps(input_data), json.dumps(output_data))
+        )
+        conn.commit()
+        print(f"Hypertension entry saved for patient {patient_id}")
+    except mysql.connector.Error as err:
+        print(f"Error saving hypertension entry: {err}")
+    finally:
+        if 'conn' in locals() and conn.is_connected():
+            cursor.close()
+            conn.close()
+
 def save_vitals_data(patient_id, vitals_data):
     """Save vitals data to database"""
     try:
@@ -404,6 +503,106 @@ def save_vitals_data(patient_id, vitals_data):
         print(f"Error saving vitals: {err}")
     finally:
         if 'conn' in locals() and conn.is_connected():
+            cursor.close()
+            conn.close()
+
+def build_patient_report_text(patient_id: int) -> str:
+    """Aggregate patient data from DB into a single text blob to feed the LLM.
+    Excludes login/session information.
+    """
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor(dictionary=True)
+
+        sections = []
+
+        # Predictions summary
+        cursor.execute(
+            """
+            SELECT prediction_type, input_data, output_data, created_at
+            FROM user_predictions
+            WHERE patient_id = %s
+            ORDER BY created_at DESC
+            LIMIT 200
+            """,
+            (patient_id,)
+        )
+        for row in cursor.fetchall():
+            sections.append(f"[Prediction: {row['prediction_type']} at {row['created_at']}]\nInput: {row['input_data']}\nOutput: {row['output_data']}")
+
+        # Diabetes entries
+        cursor.execute(
+            """
+            SELECT input_data, output_data, created_at
+            FROM diabetes_entries
+            WHERE patient_id = %s
+            ORDER BY created_at DESC
+            LIMIT 200
+            """,
+            (patient_id,)
+        )
+        for row in cursor.fetchall():
+            sections.append(f"[Diabetes Entry at {row['created_at']}]\nInput: {row['input_data']}\nOutput: {row['output_data']}")
+
+        # Hypertension entries
+        cursor.execute(
+            """
+            SELECT input_data, output_data, created_at
+            FROM hypertension_entries
+            WHERE patient_id = %s
+            ORDER BY created_at DESC
+            LIMIT 200
+            """,
+            (patient_id,)
+        )
+        for row in cursor.fetchall():
+            sections.append(f"[Hypertension Entry at {row['created_at']}]\nInput: {row['input_data']}\nOutput: {row['output_data']}")
+
+        report_text = "\n\n".join(sections) if sections else "No prior records."
+        return report_text
+    finally:
+        if 'conn' in locals() and conn.is_connected():
+            cursor.close()
+            conn.close()
+
+def split_days(plan_text: str):
+    days = {}
+    parts = re.split(r"\n(?=Day \d+)", plan_text.strip())
+    for p in parts:
+        if p.strip():
+            label = p.split("\n")[0].strip()
+            days[label] = p.strip()
+    return days
+
+def generate_and_store_care_plan(patient_id: int) -> int:
+    """Generate a 7-day care plan for patient and store it. Returns care_plan_id."""
+    report_text = build_patient_report_text(patient_id)
+    care_text = llm_generate_care_plan(report_text)
+    care_text = format_care_text(care_text)
+
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO care_plans (patient_id) VALUES (%s)", (patient_id,))
+        care_plan_id = cursor.lastrowid
+
+        days_map = split_days(care_text)
+        created_at = datetime.now()
+        for i in range(1, 8):
+            label = f"Day {i}"
+            content = days_map.get(label, "")
+            unlock_time = created_at + timedelta(days=i-1)
+            cursor.execute(
+                """
+                INSERT INTO care_plan_days (care_plan_id, day_number, content, unlocked_at)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (care_plan_id, i, content, unlock_time)
+            )
+        conn.commit()
+        return care_plan_id
+    finally:
+        if conn.is_connected():
             cursor.close()
             conn.close()
 
@@ -539,10 +738,16 @@ def generate_report():
             save_user_activity(patient_id, 'prediction', 'generate-report', {
                 'conditions': predicted_list if predicted_list else ['Healthy']
             })
+            # Auto-generate a new care plan immediately after analysis
+            try:
+                care_plan_id = generate_and_store_care_plan(patient_id)
+                print(f"Care plan generated for patient {patient_id}: {care_plan_id}")
+            except Exception as ce:
+                print(f"Care plan generation failed for patient {patient_id}: {ce}")
         
         return jsonify(final_report)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Care plan server busy, try again"}), 503
 
 # --- DIABETES SUBTYPE PREDICTION ---
 @app.route('/predict_diabetes_subtype', methods=['POST'])
@@ -588,6 +793,7 @@ def predict_diabetes_subtype():
         # Save to database
         if patient_id:
             save_prediction_to_db(patient_id, 'diabetes_subtype', 'diabetes-check', data, response)
+            save_diabetes_entry(patient_id, data, response)
             save_user_activity(patient_id, 'prediction', 'diabetes-check', {
                 'type': 'diabetes',
                 'predicted_type': str(prediction)
@@ -596,7 +802,7 @@ def predict_diabetes_subtype():
         return jsonify(response)
     
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Care plan server busy, try again"}), 503
 
 # --- HYPERTENSION PREDICTION ---
 @app.route('/predict_hypertension', methods=['POST'])
@@ -656,6 +862,7 @@ def predict_hypertension():
         # Save to database
         if patient_id:
             save_prediction_to_db(patient_id, 'hypertension', 'hypertension-check', data, response)
+            save_hypertension_entry(patient_id, data, response)
             save_user_activity(patient_id, 'prediction', 'hypertension-check', {
                 'type': 'hypertension',
                 'risk_level': risk_level,
@@ -665,7 +872,7 @@ def predict_hypertension():
         return jsonify(response)
     
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Care plan server busy, try again"}), 503
 
 # --- VITALS RECORDING ---
 @app.route('/record_vitals', methods=['POST'])
@@ -688,6 +895,137 @@ def record_vitals():
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+# --- CARE PLAN GENERATION & RETRIEVAL ---
+@app.route('/care_plan/generate', methods=['POST'])
+def generate_care_plan():
+    try:
+        patient_id = get_current_patient_id_from_token()
+        if not patient_id:
+            return jsonify({"error": "Not authenticated"}), 401
+
+        # Build consolidated patient report from DB
+        report_text = build_patient_report_text(patient_id)
+
+        # Call LLM
+        care_text = llm_generate_care_plan(report_text)
+        care_text = format_care_text(care_text)
+
+        # Persist care plan and per-day items with daily unlock policy
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO care_plans (patient_id) VALUES (%s)", (patient_id,))
+        care_plan_id = cursor.lastrowid
+
+        days_map = split_days(care_text)
+        created_at = datetime.now()
+        for i in range(1, 8):
+            label = f"Day {i}"
+            content = days_map.get(label, "")
+            unlock_time = created_at + timedelta(days=i-1)
+            cursor.execute(
+                """
+                INSERT INTO care_plan_days (care_plan_id, day_number, content, unlocked_at)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (care_plan_id, i, content, unlock_time)
+            )
+
+        conn.commit()
+        return jsonify({"message": "Care plan generated", "care_plan_id": care_plan_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if 'conn' in locals() and conn.is_connected():
+            cursor.close()
+            conn.close()
+
+@app.route('/care_plan/today', methods=['GET'])
+def get_today_care_plan():
+    try:
+        patient_id = get_current_patient_id_from_token()
+        if not patient_id:
+            return jsonify({"error": "Not authenticated"}), 401
+
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor(dictionary=True)
+
+        # Latest plan
+        cursor.execute("SELECT id, created_at FROM care_plans WHERE patient_id = %s ORDER BY created_at DESC LIMIT 1", (patient_id,))
+        plan = cursor.fetchone()
+        if not plan:
+            return jsonify({"error": "No care plan found"}), 404
+
+        # Find the latest unlocked day
+        cursor.execute(
+            """
+            SELECT day_number, content, unlocked_at, is_completed, completed_choice
+            FROM care_plan_days
+            WHERE care_plan_id = %s AND unlocked_at <= NOW()
+            ORDER BY day_number DESC
+            LIMIT 1
+            """,
+            (plan['id'],)
+        )
+        day = cursor.fetchone()
+        if not day:
+            return jsonify({"error": "No unlocked day yet"}), 404
+
+        return jsonify({"day_number": day['day_number'], "content": day['content'], "unlocked_at": day['unlocked_at'].isoformat(), "is_completed": bool(day['is_completed']), "completed_choice": day['completed_choice']})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if 'conn' in locals() and conn.is_connected():
+            cursor.close()
+            conn.close()
+
+@app.route('/care_plan/complete', methods=['POST'])
+def complete_today_plan():
+    try:
+        patient_id = get_current_patient_id_from_token()
+        if not patient_id:
+            return jsonify({"error": "Not authenticated"}), 401
+
+        data = request.get_json() or {}
+        choice = data.get('choice')  # 'yes' or 'no'
+        if choice not in ['yes', 'no']:
+            return jsonify({"error": "choice must be 'yes' or 'no'"}), 400
+
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("SELECT id FROM care_plans WHERE patient_id = %s ORDER BY created_at DESC LIMIT 1", (patient_id,))
+        plan = cursor.fetchone()
+        if not plan:
+            return jsonify({"error": "No care plan found"}), 404
+
+        # Find latest unlocked day
+        cursor.execute(
+            """
+            SELECT id, day_number FROM care_plan_days
+            WHERE care_plan_id = %s AND unlocked_at <= NOW()
+            ORDER BY day_number DESC LIMIT 1
+            """,
+            (plan['id'],)
+        )
+        day = cursor.fetchone()
+        if not day:
+            return jsonify({"error": "No unlocked day to complete"}), 400
+
+        # Mark as completed with choice
+        cursor2 = conn.cursor()
+        cursor2.execute(
+            "UPDATE care_plan_days SET is_completed = 1, completed_choice = %s WHERE id = %s",
+            (choice, day['id'])
+        )
+        conn.commit()
+        return jsonify({"message": "Day marked completed", "day_number": day['day_number'], "choice": choice})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if 'conn' in locals() and conn.is_connected():
+            cursor.close()
+            conn.close()
 
 # --- 7. DATA RETRIEVAL ENDPOINTS ---
 @app.route('/user/predictions', methods=['GET'])
@@ -751,4 +1089,8 @@ def get_user_activity():
 
 # --- 8. RUN SERVER ---
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    try:
+        print("Starting Flask server...")
+        app.run(host='0.0.0.0', port=5000, debug=False)
+    except Exception as e:
+        print(f"Error starting server: {e}")

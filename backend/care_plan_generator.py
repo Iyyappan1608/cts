@@ -3,162 +3,46 @@ from langchain_core.prompts import ChatPromptTemplate, SystemMessagePromptTempla
 from langchain_core.output_parsers import StrOutputParser
 from groq import Groq
 import re
-import mysql.connector
-import json
-
-# Database configuration
-db_config = {
-    'host': 'localhost',
-    'user': 'root',
-    'password': 'Lohith@123',
-    'database': 'health_app_db'
-}
+import requests
+import os
 
 # ----------------- Direct API Key Declaration -----------------
-api_key = "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"
+api_key = "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"  # Replace with your actual Groq API key
 
 if not api_key or api_key.strip() == "":
     raise ValueError("❌ No API key found! Please add your Groq API key to the api_key variable.")
 
-# ----------------- Database Functions -----------------
-def get_patient_data(patient_id):
-    """Retrieve all prediction data for a patient from the database"""
+# ----------------- Server Check -----------------
+def check_groq_server(api_key, model="llama-3.1-8b-instant"):
+    client = Groq(api_key=api_key)
     try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor(dictionary=True)
-        
-        # First check what columns exist in the patients table
-        cursor.execute("SHOW COLUMNS FROM patients")
-        columns = [col[0] for col in cursor.fetchall()]
-        
-        # Build query based on available columns
-        select_columns = []
-        if 'name' in columns:
-            select_columns.append('name')
-        if 'email' in columns:
-            select_columns.append('email')
-        if 'age' in columns:
-            select_columns.append('age')
-        if 'gender' in columns:
-            select_columns.append('gender')
-        
-        if select_columns:
-            column_list = ', '.join(select_columns)
-            cursor.execute(f"SELECT {column_list} FROM patients WHERE id = %s", (patient_id,))
-            patient_info = cursor.fetchone()
-        else:
-            patient_info = {}
-        
-        if not patient_info:
-            print(f"No patient found with ID {patient_id}")
-            return None
-        
-        # Get all predictions for the patient
-        query = """
-            SELECT prediction_type, input_data, output_data, created_at 
-            FROM user_predictions 
-            WHERE patient_id = %s 
-            ORDER BY created_at DESC
-        """
-        
-        cursor.execute(query, (patient_id,))
-        predictions = cursor.fetchall()
-        
-        return {
-            'patient_info': patient_info,
-            'predictions': predictions
-        }
-        
-    except mysql.connector.Error as err:
-        print(f"Database error: {err}")
-        return None
-    finally:
-        if 'conn' in locals() and conn.is_connected():
-            cursor.close()
-            conn.close()
-
-def format_patient_report(patient_data):
-    """Format patient data into a comprehensive report for the LLM"""
-    if not patient_data:
-        return "No patient data available"
-    
-    report_parts = []
-    patient_info = patient_data.get('patient_info', {})
-    predictions = patient_data.get('predictions', [])
-    
-    # Add patient info
-    report_parts.append("--- PATIENT INFORMATION ---")
-    report_parts.append(f"Name: {patient_info.get('name', 'Not specified')}")
-    
-    if 'age' in patient_info and patient_info.get('age') is not None:
-        report_parts.append(f"Age: {patient_info.get('age')}")
-    if 'gender' in patient_info and patient_info.get('gender') is not None:
-        report_parts.append(f"Gender: {patient_info.get('gender')}")
-    
-    report_parts.append("")
-    
-    # Process each prediction
-    for prediction in predictions:
-        pred_type = prediction['prediction_type']
-        input_data = json.loads(prediction['input_data']) if prediction['input_data'] else {}
-        output_data = json.loads(prediction['output_data']) if prediction['output_data'] else {}
-        
-        if pred_type == 'chronic_disease':
-            report_parts.append("--- CHRONIC DISEASE ASSESSMENT ---")
-            if output_data.get('predicted_conditions'):
-                for condition in output_data['predicted_conditions']:
-                    report_parts.append(f"- Disease: {condition.get('disease', 'Unknown')}")
-                    report_parts.append(f"  Explanation: {condition.get('explanation', 'No explanation provided')}")
-            
-            if output_data.get('risk_assessment'):
-                for risk in output_data['risk_assessment']:
-                    report_parts.append(f"  Risk Score: {risk.get('risk_score', 'N/A')}/100 ({risk.get('risk_level', 'Unknown')})")
-                    report_parts.append(f"  Reasoning: {risk.get('primary_drivers', 'No reasoning provided')}")
-            report_parts.append("")
-        
-        elif pred_type == 'hypertension':
-            report_parts.append("--- HYPERTENSION ASSESSMENT ---")
-            report_parts.append(f"Hypertension Risk: {'Yes' if output_data.get('hypertension_risk') else 'No'}")
-            report_parts.append(f"Probability: {output_data.get('probability', 'N/A')}")
-            report_parts.append(f"Risk Level: {output_data.get('risk_level', 'Unknown')}")
-            report_parts.append(f"Stage: {output_data.get('stage', 'Unknown')}")
-            report_parts.append(f"Subtype: {output_data.get('subtype', 'Unknown')}")
-            if 'kidney_risk_1yr' in output_data:
-                report_parts.append(f"Kidney Risk (1yr): {output_data.get('kidney_risk_1yr', 'N/A')}%")
-            if 'stroke_risk_1yr' in output_data:
-                report_parts.append(f"Stroke Risk (1yr): {output_data.get('stroke_risk_1yr', 'N/A')}%")
-            if 'heart_risk_1yr' in output_data:
-                report_parts.append(f"Heart Risk (1yr): {output_data.get('heart_risk_1yr', 'N/A')}%")
-            report_parts.append(f"Explanation: {output_data.get('explanation', 'No explanation provided')}")
-            report_parts.append("")
-        
-        elif pred_type == 'vitals':
-            report_parts.append("--- RECENT VITALS ---")
-            for key, value in input_data.items():
-                if value is not None:
-                    report_parts.append(f"{key}: {value}")
-            report_parts.append("")
-    
-    return "\n".join(report_parts)
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": "test"}],
+            model=model,
+            max_tokens=1,
+            temperature=0.1
+        )
+        if response.choices[0].message.content:
+            return True
+    except Exception:
+        return False
+    return False
 
 # ----------------- Initialize LLM -----------------
-def initialize_llm():
+server_status = check_groq_server(api_key)
+llm_engine = None
+if server_status:
     try:
-        llm = ChatGroq(
+        llm_engine = ChatGroq(
             groq_api_key=api_key,
             model_name="llama-3.3-70b-versatile",
             temperature=0.7,
             max_retries=2,
             timeout=30
         )
-        # Test the connection
-        llm.invoke("test")
-        return llm
     except Exception as e:
         print(f"⚠ Failed to init LLM: {e}")
-        return None
-
-llm_engine = initialize_llm()
+        server_status = False
 
 # ----------------- PROMPTS -----------------
 system_prompt = SystemMessagePromptTemplate.from_template(
@@ -190,20 +74,70 @@ def _format_output(text: str) -> str:
     text = re.sub(r'(💧[^❌✅⚠]+)', r'\1\n', text)
     text = re.sub(r'(❌[^✅⚠]+)', r'\1\n', text)
     text = re.sub(r'(✅[^⚠]+)', r'\1\n', text)
-    text = re.sub(r'(⚠.*?)(?=\nDay|\Z)', r'\1\n', text, flags=re.DOTALL)
+    text = re.sub(r'(⚠.*?)(?=\nDay|\Z)', r'\1\n', text, flags=re.DOTALL)  # ✅ fixed line
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
-def generate_care_plan_from_report(report_text: str) -> str:
-    if llm_engine is None:
-        raise Exception("LLM engine not available.")
+
+def _validate_plan(text: str) -> None:
+    required = ["Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"]
+    for d in required:
+        if d not in text:
+            raise ValueError("Plan missing days")
+
+def extract_conditions_from_report(report_text: str) -> dict:
+    """Extract all medical conditions from the report"""
+    conditions = {}
     
-    prompt_template = ChatPromptTemplate.from_messages([
-        system_prompt,
-        ("human", """As a healthcare professional, generate a personalized 7-day care plan for this patient.
+    # Extract diseases with risk scores
+    disease_pattern = r"- Disease: (.?)\n.?Risk Score: (.?)\n.?Reasoning: (.*?)(?=\n\n|\n- Disease:|$)"
+    matches = re.findall(disease_pattern, report_text, re.DOTALL)
+    
+    for disease, risk_score, reasoning in matches:
+        clean_disease = disease.strip()
+        conditions[clean_disease] = {
+            'risk_score': risk_score.strip(),
+            'reasoning': reasoning.strip()[:200] + "..." if len(reasoning) > 200 else reasoning.strip()
+        }
+    
+    # Extract diabetes type
+    diabetes_type_match = re.search(r"Predicted Diabetes Type: (.*?)\n", report_text)
+    diabetes_confidence_match = re.search(r"Confidence Score: (.*?)\n", report_text)
+    
+    if diabetes_type_match:
+        diabetes_type = diabetes_type_match.group(1).strip()
+        conditions["Diabetes"] = {
+            'type': diabetes_type,
+            'confidence': diabetes_confidence_match.group(1).strip() if diabetes_confidence_match else "High",
+            'reasoning': "Predicted from clinical indicators in report"
+        }
+    
+    return conditions
+
+def _build_prompt_from_report(report_text: str) -> str:
+    """Build prompt based on the exact report, no generic additions"""
+    conditions = extract_conditions_from_report(report_text)
+    
+    # Summarize conditions
+    conditions_summary = []
+    for condition, details in conditions.items():
+        summary = f"- {condition}: "
+        if 'risk_score' in details:
+            summary += f"Risk: {details['risk_score']}, "
+        if 'type' in details:
+            summary += f"Type: {details['type']}, "
+        summary += f"Reason: {details.get('reasoning', 'Not specified')}"
+        conditions_summary.append(summary)
+    
+    conditions_text = "\n".join(conditions_summary) if conditions_summary else "No specific conditions identified"
+    
+    return f"""As a healthcare professional, generate a personalized 7-day care plan for this patient.
 
 PATIENT REPORT:
 {report_text}
+
+IDENTIFIED MEDICAL CONDITIONS:
+{conditions_text}
 
 GUIDELINES:
 - Only use the information provided in the patient report (no assumptions, no generic conditions).
@@ -217,57 +151,204 @@ Day [X]
 🥗 Meals: [Specific meals] → [How it helps conditions]  
 💧 Hydration: [Plan] → [How it helps conditions]  
 ❌ Avoid: [Items/behaviors] → [Risks if taken]  
-✅ Today's risk reduction: [How today's plan reduces risks]  
-⚠ Consequences if skipped: [Realistic risks like worsening health, poor sugar control,or hypertension etc.]""")
-    ])
-    
-    chain = prompt_template | llm_engine | StrOutputParser()
-    response = chain.invoke({"report_text": report_text})
-    text = _strip_think_tags(response)
-    text = _extract_plan_only(text)
-    text = _format_output(text)
-    return text
+✅ Today's risk reduction: [How today’s plan reduces risks]  
+⚠ Consequences if skipped: [Realistic risks like worsening health, poor sugar control,or hypertension etc.]"""
 
-# ----------------- Main Execution -----------------
-if __name__ == "__main__":
-    # Get patient ID from user input
+def generate_care_plan_from_report(report_text: str) -> str:
+    """Generate 7‑day plan via LLM. If LLM is unreachable, raise a clear error."""
+    if llm_engine is None:
+        raise RuntimeError("Care plan server busy, try again")
+    detailed_prompt = _build_prompt_from_report(report_text)
     try:
-        patient_id = int(input("Enter patient ID: "))
-    except ValueError:
-        print("Please enter a valid patient ID (number)")
-        exit()
-    
-    # Retrieve patient data from database
-    print("Retrieving patient data from database...")
-    patient_data = get_patient_data(patient_id)
-    
-    if not patient_data:
-        print("No patient data found. Please check the patient ID.")
-        exit()
-    
-    # Format the data into a report
-    report_input = format_patient_report(patient_data)
-    
-    # Print the report for debugging
-    print("\n" + "="*50)
-    print("PATIENT REPORT FOR LLM")
-    print("="*50)
-    print(report_input)
-    print("="*50)
-    
-    # Generate care plan if LLM is available
-    if llm_engine:
+        prompt_template = ChatPromptTemplate.from_messages([
+            system_prompt,
+            HumanMessagePromptTemplate.from_template(detailed_prompt)
+        ])
+        chain = prompt_template | llm_engine | StrOutputParser()
+        response = chain.invoke({})
+        text = _strip_think_tags(response)
+        text = _extract_plan_only(text)
+        text = _format_output(text)
+        _validate_plan(text)
+        return text
+    except Exception as e:
+        raise RuntimeError("Care plan server busy, try again") from e
+
+# ----------------- Variable Input -----------------
+report_input = """--- Enter Patient Data ---
+Gender (Male/Female):  male
+Age (years):  75
+BMI:  29
+Smoking Status (Never/Former/Current):  former
+History of stroke? (0/1) (0/1):  1
+Systolic BP:  185
+Diastolic BP:  110
+Heart Rate:  85
+Respiratory Rate:  18
+Fasting Blood Sugar:  110
+HbA1c:  5.8
+Serum Creatinine:  1.1
+eGFR:  75
+BUN:  20
+Total Cholesterol:  220
+LDL Cholesterol:  155
+HDL Cholesterol:  45
+Triglycerides:  160
+Hemoglobin:  14.2
+Urine Albumin ACR:  25
+Glucose in Urine? (0/1) (0/1):  0
+FEV1/FVC Ratio:  0.81
+
+--- Final Diagnostic Report ---
+The model predicts the patient may have the following conditions:
+
+- Disease: Heart Disease
+  Risk Score: 94.6/100 (High)
+  Reasoning: high LDL ('bad') cholesterol (155.0 mg/dL), high triglycerides (160.0 mg/dL), presence of high blood pressure, history of smoking
+
+- Disease: Hypertension
+  Risk Score: 95.0/100 (High)
+  Reasoning: high blood pressure (Stage 2) at 185/110 mmHg, advanced age
+
+- Disease: Stroke
+  Risk Score: 100.0/100 (High)
+  Reasoning: a prior history of stroke, critically high blood pressure (185/110 mmHg), uncontrolled hypertension
+  Model Accuracy: 99.00%
+
+
+
+--- Please Enter Patient Clinical Data ---
+
+Is the patient pregnant? (0 for No, 1 for Yes): 0
+
+Age at Diagnosis: 60
+
+BMI at Diagnosis (e.g., 25.4): 38.1
+
+HbA1c level (e.g., 6.5): 9.1
+
+C-Peptide Level (e.g., 0.8): 1.8
+
+Family History:
+
+1. Strong_Multi_Generational
+
+2. nan
+
+3. Parent/Sibling_T2D
+
+4. Parent/Sibling_T1D
+
+Enter your choice (number or text): 3
+
+Autoantibodies Status:
+
+1. Negative
+
+2. GAD65_Positive
+
+3. Multiple_Positive
+
+Enter your choice (number or text): 1
+
+Genetic Test Result:
+
+1. Known_MODY_Mutation
+
+2. Negative
+
+Enter your choice (number or text): 2
+
+---------------------------------------------
+
+Diabetes Prediction Report
+
+---------------------------------------------
+
+Predicted Diabetes Type: T2D
+
+Confidence Score: 100.00%
+
+
+
+Explanation:
+
+Prediction reasoning based on clinical indicators:
+
+- Absence of autoantibodies and high BMI (38.1) indicate insulin resistance type diabetes.
+
+- Adult age at diagnosis (60).
+
+
+
+
+
+Predicted Diabetes Risk Level: High
+
+Cluster Stats: Mean HbA1c: 9.57, BMI: 33.9, Age: 55.3
+
+
+
+Risk Explanation:
+
+Risk level is derived by comparing your clinical factors to clusters of patients.
+
+Higher HbA1c and BMI in the high-risk cluster correspond to higher diabetes risk.
+
+Lower values in the low-risk cluster indicate healthier profiles.
+"""
+# ----------------- SEPARATE 7 DAYS -----------------
+def split_days(plan_text: str):
+    """Split care plan into dictionary with Day 1..Day 7"""
+    days = {}
+    matches = re.split(r"\n(?=Day \d+)", plan_text.strip())  # split at each "Day X"
+    for m in matches:
+        if m.strip():
+            day_label = m.split("\n")[0].strip()
+            days[day_label] = m.strip()
+    return days
+
+def print_day(day_text: str):
+    """Print day content up to and including the full ❌ Avoid sentence, then ask for input"""
+    # Find key section indexes
+    avoid_idx = day_text.find("❌ Avoid")
+    reduction_idx = day_text.find("✅ Today's risk reduction")
+    consequences_idx = day_text.find("⚠ Consequences if skipped")
+
+    if avoid_idx != -1:
+        # Find the end of the ❌ Avoid line/sentence (stop at newline or end of text)
+        end_of_avoid = day_text.find("\n", avoid_idx)
+        if end_of_avoid == -1:  # if ❌ Avoid is last line
+            end_of_avoid = len(day_text)
+        print(day_text[:end_of_avoid].strip())  # ✅ now prints full sentence
+
+    # Ask user for choice
+    user_choice = input("Did you follow today's care plan ?").strip().lower()
+
+    if user_choice == "yes" and reduction_idx != -1:
+        # Print from ✅ until ⚠
+        next_idx = consequences_idx if consequences_idx != -1 else len(day_text)
+        print("\n" + day_text[reduction_idx:next_idx].strip())
+    elif user_choice == "no" and consequences_idx != -1:
+        # Print ⚠ section
+        print("\n" + day_text[consequences_idx:].strip())
+
+
+if __name__ == '__main__':
+    # Demo only: generate from the sample report_input
+    if server_status and llm_engine:
         try:
             print("Analyzing patient report and generating care plan...")
             care_plan_output = generate_care_plan_from_report(report_input)
             print("✅ Care plan generated successfully!")
-            
-            # Print the care plan
-            print("\n" + "="*50)
-            print("GENERATED CARE PLAN")
-            print("="*50)
-            print(care_plan_output)
-            
+            care_plan = care_plan_output
+            days_dict = split_days(care_plan)
+            day1 = days_dict.get("Day 1", "")
+            day2 = days_dict.get("Day 2", "")
+            print("\n===== DAY 1 PLAN =====")
+            print_day(day1)
+            print("\n===== DAY 2 PLAN =====")
+            print_day(day2)
         except Exception as e:
             print(f"❌ Failed: {str(e)}")
     else:

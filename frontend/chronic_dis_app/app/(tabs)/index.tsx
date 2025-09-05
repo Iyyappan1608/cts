@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Link, useNavigation, useRouter } from 'expo-router';
+import { useNavigation, useRouter } from 'expo-router';
 import React, { useLayoutEffect } from 'react';
 import { 
   ActivityIndicator, 
@@ -81,32 +81,38 @@ export default function HomeScreen() {
         <Text style={styles.headerSubtitle}>Here is your health summary.</Text>
 
         <AnimatedCard index={0}>
-          <Link href="/add-entry" asChild>
-            <TouchableOpacity style={styles.addButton}>
-              <Ionicons name="search-outline" size={24} color="#FFFFFF" />
-              <Text style={styles.addButtonText}>Check for Chronic Diseases</Text>
-            </TouchableOpacity>
-          </Link>
+          <TouchableOpacity 
+            style={styles.addButton}
+            onPress={() => router.push('/add-entry')}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="search-outline" size={24} color="#FFFFFF" />
+            <Text style={styles.addButtonText}>Check for Chronic Diseases</Text>
+          </TouchableOpacity>
         </AnimatedCard>
 
         {(hasDiabetes || hasHypertension) && (
           <AnimatedCard index={1}>
             <DashboardCard icon="stats-chart-outline" title="Drill-down Analysis">
               {hasDiabetes && (
-                <Link href="/diabetes-check" asChild>
-                  <TouchableOpacity style={styles.drilldownButton}>
+                  <TouchableOpacity 
+                    style={styles.drilldownButton}
+                    onPress={() => router.push('/diabetes-check')}
+                    activeOpacity={0.8}
+                  >
                     <Text style={styles.drilldownButtonText}>Analyze Diabetes Subtype</Text>
                     <Ionicons name="chevron-forward-outline" size={20} color="#FFFFFF" />
                   </TouchableOpacity>
-                </Link>
               )}
               {hasHypertension && (
-                <Link href="/hypertension-check" asChild>
-                  <TouchableOpacity style={[styles.drilldownButton, {marginTop: hasDiabetes ? 10 : 0}]}>
+                  <TouchableOpacity 
+                    style={StyleSheet.flatten([styles.drilldownButton, {marginTop: hasDiabetes ? 10 : 0}])}
+                    onPress={() => router.push('/hypertension-check')}
+                    activeOpacity={0.8}
+                  > 
                     <Text style={styles.drilldownButtonText}>Analyze Hypertension Stage</Text>
                     <Ionicons name="chevron-forward-outline" size={20} color="#FFFFFF" />
                   </TouchableOpacity>
-                </Link>
               )}
             </DashboardCard>
           </AnimatedCard>

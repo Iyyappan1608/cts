@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 // CORRECT PATH
 import { useData } from '../src/context/DataContext';
+import { post } from '../src/lib/api';
 
 export default function AddVitalsScreen() {
   // Get the addVitals function from our global context
@@ -26,20 +27,33 @@ export default function AddVitalsScreen() {
   const [heartRate, setHeartRate] = useState('');
   const [notes, setNotes] = useState('');
 
-  const handleSave = () => {
+  const handleSave = async () => {
     // Basic validation to ensure at least one field is filled
     if (!glucose && !systolic && !diastolic && !heartRate) {
       Alert.alert('Missing Data', 'Please enter at least one vital sign reading.');
       return;
     }
     
-    // Call the function from our context to add the new data to our global store
-    addVitals({
+    // Build payload
+    const vitalsPayload = {
       glucose: glucose || null,
       bloodPressure: (systolic && diastolic) ? `${systolic}/${diastolic}` : null,
       heartRate: heartRate || null,
       notes: notes || null,
-    });
+    };
+
+    // Save locally to context
+    addVitals(vitalsPayload);
+
+    // Also send to backend for persistence
+    try {
+      const { ok, data } = await post('/record_vitals', vitalsPayload, true);
+      if (!ok) {
+        console.log('Failed to record vitals on server', data);
+      }
+    } catch (e) {
+      console.log('Error posting vitals to server', e);
+    }
 
     // Go back to the dashboard screen
     router.back();

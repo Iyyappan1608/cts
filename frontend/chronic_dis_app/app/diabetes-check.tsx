@@ -2,19 +2,30 @@ import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Alert, Switch, ActivityIndicator, SafeAreaView } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { Colors } from '../constants/Colors';
+import { post } from '../src/lib/api';
 import DashboardCard from '../components/DashboardCard';
 import { Ionicons } from '@expo/vector-icons';
 
 // Helper component for choice buttons
 type ChoiceButtonProps = { label: string; value: any; selectedValue: any; onSelect: (value: any) => void; };
-const ChoiceButton = ({ label, value, selectedValue, onSelect }: ChoiceButtonProps) => (
-    <TouchableOpacity 
-      style={[styles.choiceButton, selectedValue === value && styles.choiceButtonSelected]}
-      onPress={() => onSelect(value)}
-    >
-      <Text style={[styles.choiceButtonText, selectedValue === value && styles.choiceButtonTextSelected]}>{label}</Text>
-    </TouchableOpacity>
-);
+const ChoiceButton = ({ label, value, selectedValue, onSelect }: ChoiceButtonProps) => {
+    const containerStyle = StyleSheet.flatten([
+        styles.choiceButton,
+        selectedValue === value ? styles.choiceButtonSelected : null,
+    ]);
+    const textStyle = StyleSheet.flatten([
+        styles.choiceButtonText,
+        selectedValue === value ? styles.choiceButtonTextSelected : null,
+    ]);
+    return (
+        <TouchableOpacity 
+          style={containerStyle}
+          onPress={() => onSelect(value)}
+        >
+          <Text style={textStyle}>{label}</Text>
+        </TouchableOpacity>
+    );
+};
 
 export default function DiabetesCheckScreen() {
     const router = useRouter();
@@ -48,14 +59,8 @@ export default function DiabetesCheckScreen() {
         };
 
         try {
-            // ⚠️ IMPORTANT: Make sure your IP address is correct here
-            const response = await fetch('http://172.20.10.10:5000/predict_diabetes_subtype', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(dataForModel),
-            });
-            const result = await response.json();
-            if (!response.ok) throw new Error(result.error || 'Prediction failed');
+            const { ok, data: result } = await post('/predict_diabetes_subtype', dataForModel, true);
+            if (!ok) throw new Error((result as any).error || 'Prediction failed');
             
             // Navigate to the dedicated report screen with the results
             router.push({

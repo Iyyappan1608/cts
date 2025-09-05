@@ -3,19 +3,30 @@ import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Alert,
 import { Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../constants/Colors';
+import { post } from '../src/lib/api';
 import DashboardCard from '../components/DashboardCard';
 import { useData } from '../src/context/DataContext';
 
 // Helper component for choice buttons
 type ChoiceButtonProps = { label: string; value: string; selectedValue: string; onSelect: (value: string) => void; };
-const ChoiceButton = ({ label, value, selectedValue, onSelect }: ChoiceButtonProps) => (
-    <TouchableOpacity 
-      style={[styles.choiceButton, selectedValue === value && styles.choiceButtonSelected]}
-      onPress={() => onSelect(value)}
-    >
-      <Text style={[styles.choiceButtonText, selectedValue === value && styles.choiceButtonTextSelected]}>{label}</Text>
-    </TouchableOpacity>
-);
+const ChoiceButton = ({ label, value, selectedValue, onSelect }: ChoiceButtonProps) => {
+    const containerStyle = StyleSheet.flatten([
+        styles.choiceButton,
+        selectedValue === value ? styles.choiceButtonSelected : null,
+    ]);
+    const textStyle = StyleSheet.flatten([
+        styles.choiceButtonText,
+        selectedValue === value ? styles.choiceButtonTextSelected : null,
+    ]);
+    return (
+        <TouchableOpacity 
+          style={containerStyle}
+          onPress={() => onSelect(value)}
+        >
+          <Text style={textStyle}>{label}</Text>
+        </TouchableOpacity>
+    );
+};
 
 // Define the shape of a single prediction object for type safety
 type PredictedCondition = {
@@ -74,14 +85,9 @@ export default function AddEntryScreen() {
         
         setIsSubmitting(true);
         try {
-            const response = await fetch('http://172.20.10.10:5000/generate_report', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(patientDataForModel),
-            });
-            if (!response.ok) { throw new Error(`Server error: ${response.status}`); }
-            
-            const report = await response.json();
+            const { ok, status, data } = await post('/generate_report', patientDataForModel, true);
+            if (!ok) { throw new Error(`Server error: ${status}`); }
+            const report = data as any;
             
             const diseaseNames = report.predicted_conditions.map((p: PredictedCondition) => p.disease);
             if (diseaseNames) {

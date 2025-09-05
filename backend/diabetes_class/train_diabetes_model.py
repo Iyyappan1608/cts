@@ -16,7 +16,7 @@ from sklearn.metrics import accuracy_score, precision_recall_fscore_support, cla
 
 # --- 1. Load Dataset ---
 try:
-    df = pd.read_excel(r"C:\Users\IYYAPPAN\Desktop\Health_app\backend\diabetes_class\Diabetestype.xlsx")
+    df = pd.read_excel(r"D:\SEN PRJ\cts\backend\diabetes_class\Diabetestype.xlsx")
     print(f"--- Loaded dataset with {len(df)} records ---")
     
     # Data validation
